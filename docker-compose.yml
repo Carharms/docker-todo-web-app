@@ -1,0 +1,94 @@
+# docker-compose.yml
+  # Removed: version: '3.8'
+services:
+  # DB Container
+  db:
+    image: mysql:8.0
+    container_name: todo-mysql-db
+    environment:
+      MYSQL_ROOT_PASSWORD: mysqlpassword
+      MYSQL_DATABASE: todo_db
+      MYSQL_USER: app-user
+      MYSQL_PASSWORD: password
+    volumes:
+      # default directory for MYSQL data files
+      - db_data:/var/lib/mysql
+      # bind mount putting init.sql into container
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro 
+    networks:
+      - backend_network 
+    # Improved healthcheck for MySQL
+    healthcheck:
+      test: [
+        "CMD-SHELL", 
+        "mysqladmin ping -h localhost -u app-user -ppassword && mysql -h localhost -u app-user -ppassword -e 'USE todo_db; SELECT 1;'"
+      ]
+      interval: 10s 
+      timeout: 10s 
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  # Web Container
+  web:
+    build: ./app
+    container_name: todo-web-app
+    environment:
+      MYSQL_USER: app-user
+      MYSQL_PASSWORD: password
+      MYSQL_HOST: db
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: todo_db
+    volumes:
+      # mount logs to allow for inspection
+      - web_logs:/app/logs  
+    networks:
+      - frontend_network
+      - backend_network
+    # do NOT start service until db service is "healthy"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Improved healthcheck for web service
+    # make HTTP request to healthz endpoint at port 5000
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  #NGinx Container
+  nginx:
+    image: nginx:stable-alpine
+    container_name: todo-nginx-proxy
+    ports:
+      - "80:80" 
+    volumes:
+      # bind mount for configuring NGinx to proxy requests
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro 
+    networks:
+      - frontend_network
+    # do NOT start service until web service is "healthy"
+    depends_on:
+      web:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  web_logs:
+
+networks:
+  frontend_network:
+    driver: bridge
+  backend_network:
+    driver: bridge
